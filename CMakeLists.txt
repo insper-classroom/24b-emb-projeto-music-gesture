@@ -1,35 +1,31 @@
-cmake_minimum_required(VERSION 3.13)
+# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.1.1)
+set(toolchainVersion 14_2_Rel1)
+set(picotoolVersion 2.1.1)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+# ====================================================================================
+set(PICO_BOARD pico CACHE STRING "Board type")
 
-# Pull in SDK (must be before project)
+cmake_minimum_required(VERSION 3.12)
+
+# initialize the SDK based on PICO_SDK_PATH
+# note: this must happen before project()
 include(pico_sdk_import.cmake)
 
-# Pull in FreeRTOS
-set(FREERTOS_KERNEL_PATH ${CMAKE_CURRENT_LIST_DIR}/freertos/FreeRTOS-Kernel)
-include(freertos/FreeRTOS_Kernel_import.cmake)
+project(pico_emb)
 
-# Project name
-project(pico-freertos)
-
+# initialize the Pico SDK
 pico_sdk_init()
 
-# Configuration projects
-add_executable(pico-freertos
-    main/main.c
-)
-
-target_include_directories(pico-freertos PRIVATE
-    freertos/
-)
-
-target_link_libraries(pico-freertos PRIVATE
-    pico_stdlib
-    FreeRTOS-Kernel
-    FreeRTOS-Kernel-Heap4
-)
-
-target_compile_options(pico-freertos PRIVATE -Wall)
-
-# Run the entire project in SRAM
-# pico_set_binary_type(pico-freertos copy_to_ram)
-
-pico_add_extra_outputs(pico-freertos)
+# rest of your project
+add_subdirectory(freertos)
+add_subdirectory(mpu6050)
+add_subdirectory(main)
