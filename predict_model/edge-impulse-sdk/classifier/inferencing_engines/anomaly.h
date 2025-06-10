@@ -1,18 +1,35 @@
-/*
- * Copyright (c) 2022 EdgeImpulse Inc.
+/* The Clear BSD License
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- * http://www.apache.org/licenses/LICENSE-2.0
+ * Copyright (c) 2025 EdgeImpulse Inc.
+ * All rights reserved.
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an "AS
- * IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language
- * governing permissions and limitations under the License.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted (subject to the limitations in the disclaimer
+ * below) provided that the following conditions are met:
  *
- * SPDX-License-Identifier: Apache-2.0
+ *   * Redistributions of source code must retain the above copyright notice,
+ *   this list of conditions and the following disclaimer.
+ *
+ *   * Redistributions in binary form must reproduce the above copyright
+ *   notice, this list of conditions and the following disclaimer in the
+ *   documentation and/or other materials provided with the distribution.
+ *
+ *   * Neither the name of the copyright holder nor the names of its
+ *   contributors may be used to endorse or promote products derived from this
+ *   software without specific prior written permission.
+ *
+ * NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE GRANTED BY
+ * THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+ * CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+ * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _EDGE_IMPULSE_INFERENCING_ANOMALY_H_
@@ -163,7 +180,7 @@ EI_IMPULSE_ERROR run_kmeans_anomaly(
 {
     ei_learning_block_config_anomaly_kmeans_t *block_config = (ei_learning_block_config_anomaly_kmeans_t*)config_ptr;
 
-    uint64_t anomaly_start_ms = ei_read_timer_ms();
+    uint64_t anomaly_start_us = ei_read_timer_us();
 
     float *input = (float*)ei_malloc(block_config->anom_axes_size * sizeof(float));
     if (!input) {
@@ -177,15 +194,16 @@ EI_IMPULSE_ERROR run_kmeans_anomaly(
     float anomaly = get_min_distance_to_cluster(
         input, block_config->anom_axes_size, block_config->anom_clusters, block_config->anom_cluster_count);
 
-    uint64_t anomaly_end_ms = ei_read_timer_ms();
+    uint64_t anomaly_end_us = ei_read_timer_us();
 
     if (debug) {
-        ei_printf("Anomaly score (time: %d ms.): ", static_cast<int>(anomaly_end_ms - anomaly_start_ms));
+        ei_printf("Anomaly score (time: %d ms.): ", static_cast<int>(anomaly_end_us - anomaly_start_us));
         ei_printf_float(anomaly);
         ei_printf("\n");
     }
 
-    result->timing.anomaly = anomaly_end_ms - anomaly_start_ms;
+    result->timing.anomaly_us = anomaly_end_us - anomaly_start_us;
+    result->timing.anomaly = (int)(result->timing.anomaly_us/1000);
     result->anomaly = anomaly;
     ei_free(input);
 
@@ -258,6 +276,7 @@ EI_IMPULSE_ERROR run_gmm_anomaly(
         ei_printf("\n");
     }
 
+    result->timing.anomaly_us = anomaly_result.timing.classification_us;
     result->timing.anomaly = anomaly_result.timing.classification;
 
     if (block_config->classification_mode == EI_CLASSIFIER_CLASSIFICATION_MODE_VISUAL_ANOMALY) {

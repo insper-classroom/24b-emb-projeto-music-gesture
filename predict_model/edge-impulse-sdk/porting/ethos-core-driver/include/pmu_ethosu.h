@@ -1,18 +1,18 @@
 /*
- * Copyright (c) 2022 Arm Limited. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an "AS
- * IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language
- * governing permissions and limitations under the License.
- *
+ * SPDX-FileCopyrightText: Copyright 2019-2024 Arm Limited and/or its affiliates <open-source-office@arm.com>
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the License); you may
+ * not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an AS IS BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef PMU_ETHOSU_H
@@ -21,7 +21,6 @@
 /*****************************************************************************
  * Includes
  *****************************************************************************/
-
 #include <stdint.h>
 
 #include "ethosu_driver.h"
@@ -33,13 +32,23 @@ extern "C" {
 /*****************************************************************************
  * Defines
  *****************************************************************************/
-
+#ifdef ETHOSU85
+#define ETHOSU_PMU_NCOUNTERS 8
+#else
 #define ETHOSU_PMU_NCOUNTERS 4
+#endif
 
 #define ETHOSU_PMU_CNT1_Msk (1UL << 0)
 #define ETHOSU_PMU_CNT2_Msk (1UL << 1)
 #define ETHOSU_PMU_CNT3_Msk (1UL << 2)
 #define ETHOSU_PMU_CNT4_Msk (1UL << 3)
+#ifdef ETHOSU85
+#define ETHOSU_PMU_CNT5_Msk (1UL << 4)
+#define ETHOSU_PMU_CNT6_Msk (1UL << 5)
+#define ETHOSU_PMU_CNT7_Msk (1UL << 6)
+#define ETHOSU_PMU_CNT8_Msk (1UL << 7)
+#endif
+
 #define ETHOSU_PMU_CCNT_Msk (1UL << 31)
 
 /*****************************************************************************
@@ -51,6 +60,7 @@ extern "C" {
  * Note: These values are symbolic. Actual HW-values may change. I.e. always use API
  *       to set/get actual event-type value.
  * */
+#if defined(ETHOSU55) || defined(ETHOSU65)
 enum ethosu_pmu_event_type
 {
     ETHOSU_PMU_NO_EVENT = 0,
@@ -104,6 +114,15 @@ enum ethosu_pmu_event_type
     ETHOSU_PMU_AXI0_ENABLED_CYCLES,
     ETHOSU_PMU_AXI0_RD_STALL_LIMIT,
     ETHOSU_PMU_AXI0_WR_STALL_LIMIT,
+    ETHOSU_PMU_AXI_LATENCY_ANY,
+    ETHOSU_PMU_AXI_LATENCY_32,
+    ETHOSU_PMU_AXI_LATENCY_64,
+    ETHOSU_PMU_AXI_LATENCY_128,
+    ETHOSU_PMU_AXI_LATENCY_256,
+    ETHOSU_PMU_AXI_LATENCY_512,
+    ETHOSU_PMU_AXI_LATENCY_1024,
+    ETHOSU_PMU_ECC_DMA,
+    ETHOSU_PMU_ECC_SB0,
     ETHOSU_PMU_AXI1_RD_TRANS_ACCEPTED,
     ETHOSU_PMU_AXI1_RD_TRANS_COMPLETED,
     ETHOSU_PMU_AXI1_RD_DATA_BEAT_RECEIVED,
@@ -117,6 +136,80 @@ enum ethosu_pmu_event_type
     ETHOSU_PMU_AXI1_ENABLED_CYCLES,
     ETHOSU_PMU_AXI1_RD_STALL_LIMIT,
     ETHOSU_PMU_AXI1_WR_STALL_LIMIT,
+    ETHOSU_PMU_ECC_SB1,
+
+    ETHOSU_PMU_SENTINEL // End-marker (not event)
+};
+#elif defined(ETHOSU85)
+enum ethosu_pmu_event_type
+{
+    ETHOSU_PMU_NO_EVENT = 0,
+    ETHOSU_PMU_CYCLE,
+    ETHOSU_PMU_NPU_IDLE,
+    ETHOSU_PMU_CC_STALLED_ON_BLOCKDEP,
+    ETHOSU_PMU_NPU_ACTIVE,
+    ETHOSU_PMU_MAC_ACTIVE,
+    ETHOSU_PMU_MAC_DPU_ACTIVE,
+    ETHOSU_PMU_MAC_STALLED_BY_W_OR_ACC,
+    ETHOSU_PMU_MAC_STALLED_BY_W,
+    ETHOSU_PMU_MAC_STALLED_BY_ACC,
+    ETHOSU_PMU_MAC_STALLED_BY_IB,
+    ETHOSU_PMU_AO_ACTIVE,
+    ETHOSU_PMU_AO_STALLED_BY_BS_OR_OB,
+    ETHOSU_PMU_AO_STALLED_BY_BS,
+    ETHOSU_PMU_AO_STALLED_BY_OB,
+    ETHOSU_PMU_AO_STALLED_BY_AB_OR_CB,
+    ETHOSU_PMU_AO_STALLED_BY_AB,
+    ETHOSU_PMU_AO_STALLED_BY_CB,
+    ETHOSU_PMU_WD_ACTIVE,
+    ETHOSU_PMU_WD_STALLED,
+    ETHOSU_PMU_WD_STALLED_BY_WD_BUF,
+    ETHOSU_PMU_WD_STALLED_BY_WS_FC,
+    ETHOSU_PMU_WD_STALLED_BY_WS_TC,
+    ETHOSU_PMU_WD_TRANS_WBLK,
+    ETHOSU_PMU_WD_TRANS_WS_FC,
+    ETHOSU_PMU_WD_TRANS_WS_TC,
+    ETHOSU_PMU_WD_STALLED_BY_WS_SC0,
+    ETHOSU_PMU_WD_STALLED_BY_WS_SC1,
+    ETHOSU_PMU_WD_STALLED_BY_WS_SC2,
+    ETHOSU_PMU_WD_STALLED_BY_WS_SC3,
+    ETHOSU_PMU_WD_PARSE_ACTIVE_SC0,
+    ETHOSU_PMU_WD_PARSE_ACTIVE_SC1,
+    ETHOSU_PMU_WD_PARSE_ACTIVE_SC2,
+    ETHOSU_PMU_WD_PARSE_ACTIVE_SC3,
+    ETHOSU_PMU_WD_PARSE_STALL_SC0,
+    ETHOSU_PMU_WD_PARSE_STALL_SC1,
+    ETHOSU_PMU_WD_PARSE_STALL_SC2,
+    ETHOSU_PMU_WD_PARSE_STALL_SC3,
+    ETHOSU_PMU_WD_PARSE_STALL_IN_SC0,
+    ETHOSU_PMU_WD_PARSE_STALL_IN_SC1,
+    ETHOSU_PMU_WD_PARSE_STALL_IN_SC2,
+    ETHOSU_PMU_WD_PARSE_STALL_IN_SC3,
+    ETHOSU_PMU_WD_PARSE_STALL_OUT_SC0,
+    ETHOSU_PMU_WD_PARSE_STALL_OUT_SC1,
+    ETHOSU_PMU_WD_PARSE_STALL_OUT_SC2,
+    ETHOSU_PMU_WD_PARSE_STALL_OUT_SC3,
+    ETHOSU_PMU_WD_TRANS_WS_SC0,
+    ETHOSU_PMU_WD_TRANS_WS_SC1,
+    ETHOSU_PMU_WD_TRANS_WS_SC2,
+    ETHOSU_PMU_WD_TRANS_WS_SC3,
+    ETHOSU_PMU_WD_TRANS_WB0,
+    ETHOSU_PMU_WD_TRANS_WB1,
+    ETHOSU_PMU_WD_TRANS_WB2,
+    ETHOSU_PMU_WD_TRANS_WB3,
+    ETHOSU_PMU_SRAM_RD_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM_RD_TRANS_COMPLETED,
+    ETHOSU_PMU_SRAM_RD_DATA_BEAT_RECEIVED,
+    ETHOSU_PMU_SRAM_RD_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM_WR_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM_WR_TRANS_COMPLETED_M,
+    ETHOSU_PMU_SRAM_WR_TRANS_COMPLETED_S,
+    ETHOSU_PMU_SRAM_WR_DATA_BEAT_WRITTEN,
+    ETHOSU_PMU_SRAM_WR_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM_WR_DATA_BEAT_STALLED,
+    ETHOSU_PMU_SRAM_ENABLED_CYCLES,
+    ETHOSU_PMU_SRAM_RD_STALL_LIMIT,
+    ETHOSU_PMU_SRAM_WR_STALL_LIMIT,
     ETHOSU_PMU_AXI_LATENCY_ANY,
     ETHOSU_PMU_AXI_LATENCY_32,
     ETHOSU_PMU_AXI_LATENCY_64,
@@ -125,11 +218,108 @@ enum ethosu_pmu_event_type
     ETHOSU_PMU_AXI_LATENCY_512,
     ETHOSU_PMU_AXI_LATENCY_1024,
     ETHOSU_PMU_ECC_DMA,
-    ETHOSU_PMU_ECC_SB0,
-    ETHOSU_PMU_ECC_SB1,
+    ETHOSU_PMU_ECC_MAC_IB,
+    ETHOSU_PMU_ECC_MAC_AB,
+    ETHOSU_PMU_ECC_AO_CB,
+    ETHOSU_PMU_ECC_AO_OB,
+    ETHOSU_PMU_ECC_AO_LUT,
+    ETHOSU_PMU_EXT_RD_TRANS_ACCEPTED,
+    ETHOSU_PMU_EXT_RD_TRANS_COMPLETED,
+    ETHOSU_PMU_EXT_RD_DATA_BEAT_RECEIVED,
+    ETHOSU_PMU_EXT_RD_TRAN_REQ_STALLED,
+    ETHOSU_PMU_EXT_WR_TRANS_ACCEPTED,
+    ETHOSU_PMU_EXT_WR_TRANS_COMPLETED_M,
+    ETHOSU_PMU_EXT_WR_TRANS_COMPLETED_S,
+    ETHOSU_PMU_EXT_WR_DATA_BEAT_WRITTEN,
+    ETHOSU_PMU_EXT_WR_TRAN_REQ_STALLED,
+    ETHOSU_PMU_EXT_WR_DATA_BEAT_STALLED,
+    ETHOSU_PMU_EXT_ENABLED_CYCLES,
+    ETHOSU_PMU_EXT_RD_STALL_LIMIT,
+    ETHOSU_PMU_EXT_WR_STALL_LIMIT,
+    ETHOSU_PMU_SRAM0_RD_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM0_RD_TRANS_COMPLETED,
+    ETHOSU_PMU_SRAM0_RD_DATA_BEAT_RECEIVED,
+    ETHOSU_PMU_SRAM0_RD_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM0_WR_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM0_WR_TRANS_COMPLETED_M,
+    ETHOSU_PMU_SRAM0_WR_TRANS_COMPLETED_S,
+    ETHOSU_PMU_SRAM0_WR_DATA_BEAT_WRITTEN,
+    ETHOSU_PMU_SRAM0_WR_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM0_WR_DATA_BEAT_STALLED,
+    ETHOSU_PMU_SRAM0_ENABLED_CYCLES,
+    ETHOSU_PMU_SRAM0_RD_STALL_LIMIT,
+    ETHOSU_PMU_SRAM0_WR_STALL_LIMIT,
+    ETHOSU_PMU_SRAM1_RD_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM1_RD_TRANS_COMPLETED,
+    ETHOSU_PMU_SRAM1_RD_DATA_BEAT_RECEIVED,
+    ETHOSU_PMU_SRAM1_RD_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM1_WR_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM1_WR_TRANS_COMPLETED_M,
+    ETHOSU_PMU_SRAM1_WR_TRANS_COMPLETED_S,
+    ETHOSU_PMU_SRAM1_WR_DATA_BEAT_WRITTEN,
+    ETHOSU_PMU_SRAM1_WR_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM1_WR_DATA_BEAT_STALLED,
+    ETHOSU_PMU_SRAM1_ENABLED_CYCLES,
+    ETHOSU_PMU_SRAM1_RD_STALL_LIMIT,
+    ETHOSU_PMU_SRAM1_WR_STALL_LIMIT,
+    ETHOSU_PMU_SRAM2_RD_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM2_RD_TRANS_COMPLETED,
+    ETHOSU_PMU_SRAM2_RD_DATA_BEAT_RECEIVED,
+    ETHOSU_PMU_SRAM2_RD_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM2_WR_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM2_WR_TRANS_COMPLETED_M,
+    ETHOSU_PMU_SRAM2_WR_TRANS_COMPLETED_S,
+    ETHOSU_PMU_SRAM2_WR_DATA_BEAT_WRITTEN,
+    ETHOSU_PMU_SRAM2_WR_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM2_WR_DATA_BEAT_STALLED,
+    ETHOSU_PMU_SRAM2_ENABLED_CYCLES,
+    ETHOSU_PMU_SRAM2_RD_STALL_LIMIT,
+    ETHOSU_PMU_SRAM2_WR_STALL_LIMIT,
+    ETHOSU_PMU_SRAM3_RD_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM3_RD_TRANS_COMPLETED,
+    ETHOSU_PMU_SRAM3_RD_DATA_BEAT_RECEIVED,
+    ETHOSU_PMU_SRAM3_RD_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM3_WR_TRANS_ACCEPTED,
+    ETHOSU_PMU_SRAM3_WR_TRANS_COMPLETED_M,
+    ETHOSU_PMU_SRAM3_WR_TRANS_COMPLETED_S,
+    ETHOSU_PMU_SRAM3_WR_DATA_BEAT_WRITTEN,
+    ETHOSU_PMU_SRAM3_WR_TRAN_REQ_STALLED,
+    ETHOSU_PMU_SRAM3_WR_DATA_BEAT_STALLED,
+    ETHOSU_PMU_SRAM3_ENABLED_CYCLES,
+    ETHOSU_PMU_SRAM3_RD_STALL_LIMIT,
+    ETHOSU_PMU_SRAM3_WR_STALL_LIMIT,
+    ETHOSU_PMU_EXT0_RD_TRANS_ACCEPTED,
+    ETHOSU_PMU_EXT0_RD_TRANS_COMPLETED,
+    ETHOSU_PMU_EXT0_RD_DATA_BEAT_RECEIVED,
+    ETHOSU_PMU_EXT0_RD_TRAN_REQ_STALLED,
+    ETHOSU_PMU_EXT0_WR_TRANS_ACCEPTED,
+    ETHOSU_PMU_EXT0_WR_TRANS_COMPLETED_M,
+    ETHOSU_PMU_EXT0_WR_TRANS_COMPLETED_S,
+    ETHOSU_PMU_EXT0_WR_DATA_BEAT_WRITTEN,
+    ETHOSU_PMU_EXT0_WR_TRAN_REQ_STALLED,
+    ETHOSU_PMU_EXT0_WR_DATA_BEAT_STALLED,
+    ETHOSU_PMU_EXT0_ENABLED_CYCLES,
+    ETHOSU_PMU_EXT0_RD_STALL_LIMIT,
+    ETHOSU_PMU_EXT0_WR_STALL_LIMIT,
+    ETHOSU_PMU_EXT1_RD_TRANS_ACCEPTED,
+    ETHOSU_PMU_EXT1_RD_TRANS_COMPLETED,
+    ETHOSU_PMU_EXT1_RD_DATA_BEAT_RECEIVED,
+    ETHOSU_PMU_EXT1_RD_TRAN_REQ_STALLED,
+    ETHOSU_PMU_EXT1_WR_TRANS_ACCEPTED,
+    ETHOSU_PMU_EXT1_WR_TRANS_COMPLETED_M,
+    ETHOSU_PMU_EXT1_WR_TRANS_COMPLETED_S,
+    ETHOSU_PMU_EXT1_WR_DATA_BEAT_WRITTEN,
+    ETHOSU_PMU_EXT1_WR_TRAN_REQ_STALLED,
+    ETHOSU_PMU_EXT1_WR_DATA_BEAT_STALLED,
+    ETHOSU_PMU_EXT1_ENABLED_CYCLES,
+    ETHOSU_PMU_EXT1_RD_STALL_LIMIT,
+    ETHOSU_PMU_EXT1_WR_STALL_LIMIT,
 
     ETHOSU_PMU_SENTINEL // End-marker (not event)
 };
+#else
+#error No NPU target defined
+#endif
 
 /*****************************************************************************
  * Functions
@@ -151,6 +341,12 @@ void ETHOSU_PMU_Disable(struct ethosu_driver *drv);
  * \param [in]    type    Event to count
  */
 void ETHOSU_PMU_Set_EVTYPER(struct ethosu_driver *drv, uint32_t num, enum ethosu_pmu_event_type type);
+
+/**
+ * \brief   Get number of PMU event counters
+ * \return                Number of event counters
+ */
+uint32_t ETHOSU_PMU_Get_NumEventCounters(void);
 
 /**
  * \brief   Get event to count for PMU eventer counter
@@ -301,6 +497,16 @@ void ETHOSU_PMU_PMCCNTR_CFG_Set_Start_Event(struct ethosu_driver *drv, enum etho
  * \note   Sets the event number that stops the cycle counter.
  */
 void ETHOSU_PMU_PMCCNTR_CFG_Set_Stop_Event(struct ethosu_driver *drv, enum ethosu_pmu_event_type stop_event);
+
+/**
+ * \brief   Read qread register
+ */
+uint32_t ETHOSU_PMU_Get_QREAD(struct ethosu_driver *drv);
+
+/**
+ * \brief   Read status register
+ */
+uint32_t ETHOSU_PMU_Get_STATUS(struct ethosu_driver *drv);
 
 #ifdef __cplusplus
 }

@@ -1,18 +1,35 @@
-/*
- * Copyright (c) 2022 EdgeImpulse Inc.
+/* The Clear BSD License
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- * http://www.apache.org/licenses/LICENSE-2.0
+ * Copyright (c) 2025 EdgeImpulse Inc.
+ * All rights reserved.
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an "AS
- * IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language
- * governing permissions and limitations under the License.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted (subject to the limitations in the disclaimer
+ * below) provided that the following conditions are met:
  *
- * SPDX-License-Identifier: Apache-2.0
+ *   * Redistributions of source code must retain the above copyright notice,
+ *   this list of conditions and the following disclaimer.
+ *
+ *   * Redistributions in binary form must reproduce the above copyright
+ *   notice, this list of conditions and the following disclaimer in the
+ *   documentation and/or other materials provided with the distribution.
+ *
+ *   * Neither the name of the copyright holder nor the names of its
+ *   contributors may be used to endorse or promote products derived from this
+ *   software without specific prior written permission.
+ *
+ * NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE GRANTED BY
+ * THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+ * CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+ * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _EI_CLASSIFIER_FILL_RESULT_STRUCT_H_
@@ -21,9 +38,6 @@
 using namespace ei;
 
 #include "model-parameters/model_metadata.h"
-#if EI_CLASSIFIER_HAS_MODEL_VARIABLES == 1
-#include "model-parameters/model_variables.h"
-#endif
 #include "edge-impulse-sdk/classifier/ei_model_types.h"
 #include "edge-impulse-sdk/classifier/ei_classifier_types.h"
 #include "edge-impulse-sdk/classifier/ei_nms.h"
@@ -59,6 +73,9 @@ using namespace ei;
     #endif
     #if (EI_CLASSIFIER_OBJECT_DETECTION_LAST_LAYER == EI_CLASSIFIER_LAST_LAYER_YOLOV2)
     #define EI_HAS_YOLOV2 1
+    #endif
+    #if (EI_CLASSIFIER_OBJECT_DETECTION_LAST_LAYER == EI_CLASSIFIER_LAST_LAYER_YOLO_PRO)
+    #define EI_HAS_YOLO_PRO 1
     #endif
 #endif
 
@@ -147,6 +164,7 @@ __attribute__((unused)) static void fill_result_struct_from_cubes(ei_impulse_res
     static std::vector<ei_impulse_result_bounding_box_t> results;
     int added_boxes_count = 0;
     results.clear();
+
     for (auto sc : *cubes) {
         bool has_overlapping = false;
 
@@ -199,7 +217,7 @@ __attribute__((unused)) static void fill_result_struct_from_cubes(ei_impulse_res
     }
 
     result->bounding_boxes = results.data();
-    result->bounding_boxes_count = results.size();
+    result->bounding_boxes_count = added_boxes_count;
 }
 #endif
 
@@ -283,8 +301,10 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_object_de
                                                                                         bool debug) {
 #ifdef EI_HAS_SSD
     static std::vector<ei_impulse_result_bounding_box_t> results;
+    int added_boxes_count = 0;
     results.clear();
     results.resize(impulse->object_detection_count);
+
     for (size_t ix = 0; ix < impulse->object_detection_count; ix++) {
 
         float score = scores[ix];
@@ -329,13 +349,15 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_object_de
             results[ix].width = static_cast<uint32_t>((xend - xstart) * static_cast<float>(impulse->input_width));
             results[ix].height = static_cast<uint32_t>((yend - ystart) * static_cast<float>(impulse->input_height));
             results[ix].value = score;
+
+            added_boxes_count++;
         }
         else {
             results[ix].value = 0.0f;
         }
     }
     result->bounding_boxes = results.data();
-    result->bounding_boxes_count = results.size();
+    result->bounding_boxes_count = added_boxes_count;
 
     return EI_IMPULSE_OK;
 #else
@@ -374,7 +396,13 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32(const ei_
                                                                        ei_impulse_result_t *result,
                                                                        float *data,
                                                                        bool debug) {
-    for (uint32_t ix = 0; ix < impulse->label_count; ix++) {
+#ifdef EI_DSP_RESULT_OVERRIDE
+    uint32_t stop_count = EI_DSP_RESULT_OVERRIDE;
+#else
+    uint32_t stop_count = impulse->label_count;
+#endif
+    for (uint32_t ix = 0; ix < stop_count; ix++) {
+
         float value = data[ix];
 
         if (debug) {
@@ -382,7 +410,10 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32(const ei_
             ei_printf_float(value);
             ei_printf("\n");
         }
+// For testing purposes, we will have more values than labels
+#ifndef EI_DSP_RESULT_OVERRIDE
         result->classification[ix].label = impulse->categories[ix];
+#endif
         result->classification[ix].value = value;
     }
 
@@ -395,17 +426,13 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32(const ei_
 __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_visual_ad_struct_f32(const ei_impulse_t *impulse,
                                                                        ei_impulse_result_t *result,
                                                                        float *data,
-                                                                       float threshold,
+                                                                       ei_learning_block_config_tflite_graph_t* block_config,
                                                                        bool debug) {
 #if EI_CLASSIFIER_HAS_VISUAL_ANOMALY
     float max_val = 0;
     float sum_val = 0;
-    // the feature extractor output will be 1/8 of input
-    // due to the cut-off layer chosen in MobileNetV2
-    uint32_t grid_size_x = (impulse->input_width / 8) / 2 - 1;
-    uint32_t grid_size_y = (impulse->input_height / 8) / 2 - 1;
 
-    for (uint32_t ix = 0; ix < grid_size_x * grid_size_y; ix++) {
+    for (uint32_t ix = 0; ix < impulse->visual_ad_grid_size_x * impulse->visual_ad_grid_size_y; ix++) {
         float value = data[ix];
         sum_val += value;
         if (value > max_val) {
@@ -413,7 +440,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_visual_ad_struct_f32
         }
     }
 
-    result->visual_ad_result.mean_value = sum_val / (grid_size_x * grid_size_y);
+    result->visual_ad_result.mean_value = sum_val / (impulse->visual_ad_grid_size_x * impulse->visual_ad_grid_size_y);
     result->visual_ad_result.max_value = max_val;
 
     static ei_vector<ei_impulse_result_bounding_box_t> results;
@@ -421,16 +448,16 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_visual_ad_struct_f32
     int added_boxes_count = 0;
     results.clear();
 
-    for (uint32_t x = 0; x <= grid_size_x - 1; x++) {
-        for (uint32_t y = 0; y <= grid_size_y - 1; y++) {
-            if (data[x * grid_size_x + y] >= threshold) {
+    for (uint16_t x = 0; x <= impulse->visual_ad_grid_size_x - 1; x++) {
+        for (uint16_t y = 0; y <= impulse->visual_ad_grid_size_y - 1; y++) {
+            if (data[x * impulse->visual_ad_grid_size_x + y] >= block_config->threshold) {
                 ei_impulse_result_bounding_box_t tmp = {
                     .label = "anomaly",
-                    .x = static_cast<uint32_t>(y * (static_cast<float>(impulse->input_height) / grid_size_y)),
-                    .y = static_cast<uint32_t>(x * (static_cast<float>(impulse->input_width) / grid_size_x)),
-                    .width = (impulse->input_width / grid_size_x),
-                    .height = (impulse->input_height / grid_size_y),
-                    .value = data[x * grid_size_x + y]
+                    .x = static_cast<uint32_t>(y * (static_cast<float>(impulse->input_height) / impulse->visual_ad_grid_size_y)),
+                    .y = static_cast<uint32_t>(x * (static_cast<float>(impulse->input_width) / impulse->visual_ad_grid_size_x)),
+                    .width = (impulse->input_width / impulse->visual_ad_grid_size_x),
+                    .height = (impulse->input_height / impulse->visual_ad_grid_size_y),
+                    .value = data[x * impulse->visual_ad_grid_size_x + y]
                 };
 
                 results.push_back(tmp);
@@ -446,6 +473,8 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_visual_ad_struct_f32
             results[ix].value = 0.0f;
         }
     }
+
+    result->classification[0].value = result->visual_ad_result.max_value;
 
     result->visual_ad_grid_cells = results.data();
     result->visual_ad_count = results.size();
@@ -542,7 +571,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_yolov5(co
     }
 
     result->bounding_boxes = results.data();
-    result->bounding_boxes_count = results.size();
+    result->bounding_boxes_count = added_boxes_count;
 
     return EI_IMPULSE_OK;
 #else
@@ -608,7 +637,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_quantized_yol
 
         if (score >= block_config->threshold && score <= 1.0f) {
             ei_impulse_result_bounding_box_t r;
-            r.label = ei_classifier_inferencing_categories[label];
+            r.label = impulse->categories[label];
 
             if (version != 5) {
                 x *= static_cast<float>(impulse->input_width);
@@ -642,7 +671,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_quantized_yol
     }
 
     result->bounding_boxes = results.data();
-    result->bounding_boxes_count = results.size();
+    result->bounding_boxes_count = added_boxes_count;
 
     return EI_IMPULSE_OK;
 #else
@@ -847,7 +876,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_yolox(con
     }
 
     result->bounding_boxes = results.data();
-    result->bounding_boxes_count = results.size();
+    result->bounding_boxes_count = added_boxes_count;
 
     return EI_IMPULSE_OK;
 #else
@@ -879,7 +908,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_yolox_det
 
         if (confidence >= block_config->threshold && confidence <= 1.0f) {
             ei_impulse_result_bounding_box_t r;
-            r.label = ei_classifier_inferencing_categories[class_idx];
+            r.label = impulse->categories[class_idx];
             r.value = confidence;
 
             // now find the box...
@@ -954,7 +983,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_yolov7(co
 
         if (score >= block_config->threshold && score <= 1.0f) {
             ei_impulse_result_bounding_box_t r;
-            r.label = ei_classifier_inferencing_categories[label];
+            r.label = impulse->categories[label];
 
             r.x = static_cast<uint32_t>(xmin);
             r.y = static_cast<uint32_t>(ymin);
@@ -984,9 +1013,9 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_yolov7(co
 #endif // #ifdef EI_HAS_YOLOV7
 }
 
-#if (EI_HAS_TAO_DECODE_DETECTIONS == 1) || (EI_HAS_TAO_YOLO == 1)
+#if (EI_HAS_TAO_DECODE_DETECTIONS == 1) || (EI_HAS_TAO_YOLO == 1) || (EI_HAS_YOLO_PRO == 1)
 
-__attribute__((unused)) static void prepare_tao_results_common(const ei_impulse_t *impulse,
+__attribute__((unused)) static void prepare_nms_results_common(const ei_impulse_t *impulse,
                                                                ei_impulse_result_t *result,
                                                                std::vector<ei_impulse_result_bounding_box_t> *results) {
     #define EI_CLASSIFIER_OBJECT_DETECTION_KEEP_TOPK 200
@@ -1001,7 +1030,7 @@ __attribute__((unused)) static void prepare_tao_results_common(const ei_impulse_
         }
     }
 
-    // we sort in reverse order accross all classes,
+    // we sort in reverse order across all classes,
     // since results for each class are pushed to the end.
     std::sort(results->begin(), results->end(), [ ]( const ei_impulse_result_bounding_box_t& lhs, const ei_impulse_result_bounding_box_t& rhs )
     {
@@ -1134,7 +1163,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_tao_decode_de
         EI_IMPULSE_ERROR nms_res = ei_run_nms(impulse, &class_results,
                                               boxes.data(), scores.data(), classes.data(),
                                               nr_boxes,
-                                              false /*clip_boxes*/,
+                                              true /*clip_boxes*/,
                                               debug);
 
         if (nms_res != EI_IMPULSE_OK) {
@@ -1146,7 +1175,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_tao_decode_de
         }
     }
 
-    prepare_tao_results_common(impulse, result, &results);
+    prepare_nms_results_common(impulse, result, &results);
 
     return EI_IMPULSE_OK;
 }
@@ -1277,7 +1306,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR  fill_result_struct_tao_yolov3_c
         }
     }
 
-    prepare_tao_results_common(impulse, result, &results);
+    prepare_nms_results_common(impulse, result, &results);
     return EI_IMPULSE_OK;
 }
 #endif // #ifdef EI_HAS_TAO_YOLOV3
@@ -1383,7 +1412,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_tao_yolov4_co
         }
     }
 
-    prepare_tao_results_common(impulse, result, &results);
+    prepare_nms_results_common(impulse, result, &results);
     return EI_IMPULSE_OK;
 }
 #endif // #ifdef EI_HAS_TAO_YOLOV4
@@ -1686,7 +1715,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_yolov2(co
     // convert relative coordinates to absolute coordinates
     for(auto & box: boxes) {
         ei_impulse_result_bounding_box_t res;
-        res.label = ei_classifier_inferencing_categories[box.get_label()];
+        res.label = impulse->categories[box.get_label()];
         res.x = ceil(box.x1 * impulse->input_width);
         res.y = ceil(box.y1 * impulse->input_height);
         res.width = ceil((box.x2 - box.x1) * impulse->input_width);
@@ -1706,12 +1735,144 @@ __attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_yolov2(co
     }
 
     result->bounding_boxes = results.data();
-    result->bounding_boxes_count = results.size();
+    result->bounding_boxes_count = added_boxes_count;
 
     return EI_IMPULSE_OK;
 #else
     return EI_IMPULSE_LAST_LAYER_NOT_AVAILABLE;
 #endif // #ifdef EI_HAS_YOLOV7
+}
+
+#ifdef EI_HAS_YOLO_PRO
+template<typename T>
+__attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_yolo_pro_common(const ei_impulse_t *impulse,
+                                                                                   ei_impulse_result_t *result,
+                                                                                   T *data,
+                                                                                   float zero_point,
+                                                                                   float scale,
+                                                                                   size_t output_features_count,
+                                                                                   float threshold,
+                                                                                   bool debug = false) {
+    size_t col_size = 4 + impulse->label_count;
+    size_t row_count = output_features_count / col_size;
+
+    static std::vector<ei_impulse_result_bounding_box_t> results;
+    static std::vector<ei_impulse_result_bounding_box_t> class_results;
+    results.clear();
+
+    // (xmin, ymin, xmax, ymax, cls...)
+    for (size_t cls_idx = 0; cls_idx < (size_t)impulse->label_count; cls_idx++)  {
+
+        std::vector<float> boxes;
+        std::vector<float> scores;
+        std::vector<int> classes;
+        class_results.clear();
+
+
+        for (size_t ix = 0; ix < row_count; ix++) {
+            size_t base_ix = ix * col_size;
+            float xmin  = (static_cast<float>(data[base_ix + 0]) - zero_point) * scale;
+            float ymin  = (static_cast<float>(data[base_ix + 1]) - zero_point) * scale;
+            float xmax  = (static_cast<float>(data[base_ix + 2]) - zero_point) * scale;
+            float ymax  = (static_cast<float>(data[base_ix + 3]) - zero_point) * scale;
+            float score = (static_cast<float>(data[base_ix + 4 + cls_idx]) - zero_point) * scale;
+
+            if (xmin < 0) xmin = 0;
+            if (xmin > 1) xmin = 1;
+            if (ymin < 0) ymin = 0;
+            if (ymin > 1) ymin = 1;
+            if (ymax < 0) ymax = 0;
+            if (ymax > 1) ymax = 1;
+            if (xmax < 0) xmax = 0;
+            if (xmax > 1) xmax = 1;
+            if (xmax < xmin) xmax = xmin;
+            if (ymax < ymin) ymax = ymin;
+
+            if (debug) {
+                ei_printf("%s (", impulse->categories[(uint32_t)cls_idx]);
+                ei_printf_float(cls_idx);
+                ei_printf("): ");
+                ei_printf_float(score);
+                ei_printf(" [ ");
+                ei_printf_float(xmin);
+                ei_printf(", ");
+                ei_printf_float(ymin);
+                ei_printf(", ");
+                ei_printf_float(xmax);
+                ei_printf(", ");
+                ei_printf_float(ymax);
+                ei_printf(" ]\n");
+            }
+
+            if (score >= threshold && score <= 1.0f) {
+                ymin *= static_cast<float>(impulse->input_height);
+                xmin *= static_cast<float>(impulse->input_width);
+                ymax *= static_cast<float>(impulse->input_height);
+                xmax *= static_cast<float>(impulse->input_width);
+
+                boxes.push_back(ymin);
+                boxes.push_back(xmin);
+                boxes.push_back(ymax);
+                boxes.push_back(xmax);
+                scores.push_back(score);
+                classes.push_back((int)cls_idx);
+            }
+        }
+
+        size_t nr_boxes = scores.size();
+        EI_IMPULSE_ERROR nms_res = ei_run_nms(impulse, &class_results,
+                                              boxes.data(), scores.data(), classes.data(),
+                                              nr_boxes,
+                                              true /*clip_boxes*/,
+                                              debug);
+
+        if (nms_res != EI_IMPULSE_OK) {
+            return nms_res;
+        }
+
+        for (auto bb: class_results) {
+            results.push_back(bb);
+        }
+    }
+
+    prepare_nms_results_common(impulse, result, &results);
+    return EI_IMPULSE_OK;
+}
+#endif // #ifdef EI_HAS_YOLO_PRO
+
+/**
+  * Fill the result structure from an unquantized output tensor
+  */
+__attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_f32_yolo_pro(const ei_impulse_t *impulse,
+                                                                                const ei_learning_block_config_tflite_graph_t *block_config,
+                                                                                ei_impulse_result_t *result,
+                                                                                float *data,
+                                                                                size_t output_features_count,
+                                                                                bool debug = false) {
+#ifdef EI_HAS_YOLO_PRO
+    return fill_result_struct_yolo_pro_common(impulse, result, data, 0.0f, 1.0f, output_features_count, block_config->threshold, debug);
+#else
+    return EI_IMPULSE_LAST_LAYER_NOT_AVAILABLE;
+#endif // #ifdef EI_HAS_YOLO_PRO
+}
+
+/**
+ * Fill the result structure from a quantized output tensor
+*/
+template<typename T>
+__attribute__((unused)) static EI_IMPULSE_ERROR fill_result_struct_quantized_yolo_pro(const ei_impulse_t *impulse,
+                                                                                      const ei_learning_block_config_tflite_graph_t *block_config,
+                                                                                      ei_impulse_result_t *result,
+                                                                                      T *data,
+                                                                                      float zero_point,
+                                                                                      float scale,
+                                                                                      size_t output_features_count,
+                                                                                      bool debug = false) {
+#ifdef EI_HAS_YOLO_PRO
+    return fill_result_struct_yolo_pro_common(impulse, result, data, zero_point, scale, output_features_count, block_config->threshold, debug);
+#else
+    return EI_IMPULSE_LAST_LAYER_NOT_AVAILABLE;
+#endif // #ifdef EI_HAS_YOLO_PRO
 }
 
 #if EI_CLASSIFIER_SINGLE_FEATURE_INPUT == 0
@@ -1727,6 +1888,22 @@ bool find_mtx_by_idx(ei_feature_t* mtx, ei::matrix_t** matrix, uint32_t mtx_id, 
     }
     return false;
 }
+
+size_t get_feature_size(ei_feature_t* mtx, uint32_t ids_size, uint32_t* ids, size_t mtx_size) {
+    size_t feat_size = 0;
+    ei::matrix_t* matrix = NULL;
+    for (size_t i = 0; i < ids_size; i++) {
+        size_t cur_mtx = ids[i];
+
+        if (!find_mtx_by_idx(mtx, &matrix, cur_mtx, mtx_size)) {
+            ei_printf("ERR: Cannot find matrix with id %zu\n", cur_mtx);
+            return -1;
+        }
+        feat_size += matrix->rows * matrix->cols;
+    }
+    return feat_size;
+}
+
 #endif
 
 #endif // _EI_CLASSIFIER_FILL_RESULT_STRUCT_H_

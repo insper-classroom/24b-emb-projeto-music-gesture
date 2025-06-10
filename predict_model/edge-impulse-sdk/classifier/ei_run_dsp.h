@@ -1,18 +1,35 @@
-/*
- * Copyright (c) 2022 EdgeImpulse Inc.
+/* The Clear BSD License
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- * http://www.apache.org/licenses/LICENSE-2.0
+ * Copyright (c) 2025 EdgeImpulse Inc.
+ * All rights reserved.
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an "AS
- * IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language
- * governing permissions and limitations under the License.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted (subject to the limitations in the disclaimer
+ * below) provided that the following conditions are met:
  *
- * SPDX-License-Identifier: Apache-2.0
+ *   * Redistributions of source code must retain the above copyright notice,
+ *   this list of conditions and the following disclaimer.
+ *
+ *   * Redistributions in binary form must reproduce the above copyright
+ *   notice, this list of conditions and the following disclaimer in the
+ *   documentation and/or other materials provided with the distribution.
+ *
+ *   * Neither the name of the copyright holder nor the names of its
+ *   contributors may be used to endorse or promote products derived from this
+ *   software without specific prior written permission.
+ *
+ * NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE GRANTED BY
+ * THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+ * CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+ * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _EDGE_IMPULSE_RUN_DSP_H_
@@ -24,6 +41,18 @@
 #include "edge-impulse-sdk/classifier/ei_signal_with_range.h"
 #include "edge-impulse-sdk/dsp/ei_flatten.h"
 #include "model-parameters/model_metadata.h"
+
+#if EI_CLASSIFIER_HR_ENABLED
+#if EI_CLASSIFIER_HR_LIB
+// Forward declare only the part of the class we need to link later
+class hr_class {
+public:
+    static DspHandle* create(void* config, float frequency);
+};
+#else
+#include "edge-impulse-sdk/dsp/ei_hr.hpp"
+#endif
+#endif
 
 #if defined(__cplusplus) && EI_C_LINKAGE == 1
 extern "C" {
@@ -47,6 +76,23 @@ float ei_dsp_image_buffer[EI_DSP_IMAGE_BUFFER_STATIC_SIZE];
 static float *ei_dsp_cont_current_frame = nullptr;
 static size_t ei_dsp_cont_current_frame_size = 0;
 static int ei_dsp_cont_current_frame_ix = 0;
+
+__attribute__((unused)) int extract_hr_features(
+    signal_t *signal,
+    matrix_t *output_matrix,
+    void *config_ptr,
+    const float frequency)
+{
+#if EI_CLASSIFIER_HR_ENABLED
+    auto handle = hr_class::create(config_ptr, frequency);
+    auto ret = handle->extract(signal, output_matrix, config_ptr, frequency, nullptr);
+    delete handle;
+    return ret;
+#else
+    ei_printf("ERR: Please contact EI sales to enable heart rate processing in deployment");
+    return EIDSP_NOT_SUPPORTED;
+#endif
+}
 
 __attribute__((unused)) int extract_spectral_analysis_features(
     signal_t *signal,
@@ -137,8 +183,8 @@ __attribute__((unused)) int extract_raw_features(signal_t *signal, matrix_t *out
 }
 
 __attribute__((unused)) int extract_flatten_features(signal_t *signal, matrix_t *output_matrix, void *config_ptr, const float frequency) {
-    auto handle = flatten_class::create(config_ptr);
-    auto ret = handle->extract(signal, output_matrix, config_ptr, frequency);
+    auto handle = flatten_class::create(config_ptr, frequency);
+    auto ret = handle->extract(signal, output_matrix, config_ptr, frequency, nullptr);
     delete handle;
     return ret;
 }
@@ -1123,6 +1169,9 @@ __attribute__((unused)) int extract_image_features(signal_t *signal, matrix_t *o
 
 #if (EI_CLASSIFIER_QUANTIZATION_ENABLED == 1) && (EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_DRPAI)
 
+/*
+ * Since we run the preprocessing on the DRP we pass the input buffer (mostly) as-is.
+*/
 __attribute__((unused)) int extract_drpai_features_quantized(signal_t *signal, matrix_u8_t *output_matrix, void *config_ptr, const float frequency) {
     ei_dsp_config_image_t config = *((ei_dsp_config_image_t*)config_ptr);
 
@@ -1164,7 +1213,14 @@ __attribute__((unused)) int extract_drpai_features_quantized(signal_t *signal, m
                 output_matrix->buffer[output_ix++] = b;
             }
             else {
-                //NOTE: not implementing greyscale yet
+                float r = static_cast<float>(pixel >> 16 & 0xff);
+                float g = static_cast<float>(pixel >> 8 & 0xff);
+                float b = static_cast<float>(pixel & 0xff);
+
+                // ITU-R 601-2 luma transform
+                // see: https://pillow.readthedocs.io/en/stable/reference/Image.html#PIL.Image.Image.convert
+                float v = (0.299f * r) + (0.587f * g) + (0.114f * b);
+                output_matrix->buffer[output_ix++] = v;
             }
         }
         bytes_left -= elements_to_read;

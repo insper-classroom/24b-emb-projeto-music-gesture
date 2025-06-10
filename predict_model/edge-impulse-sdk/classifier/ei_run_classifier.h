@@ -1,18 +1,35 @@
-/*
- * Copyright (c) 2022 EdgeImpulse Inc.
+/* The Clear BSD License
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- * http://www.apache.org/licenses/LICENSE-2.0
+ * Copyright (c) 2025 EdgeImpulse Inc.
+ * All rights reserved.
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an "AS
- * IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language
- * governing permissions and limitations under the License.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted (subject to the limitations in the disclaimer
+ * below) provided that the following conditions are met:
  *
- * SPDX-License-Identifier: Apache-2.0
+ *   * Redistributions of source code must retain the above copyright notice,
+ *   this list of conditions and the following disclaimer.
+ *
+ *   * Redistributions in binary form must reproduce the above copyright
+ *   notice, this list of conditions and the following disclaimer in the
+ *   documentation and/or other materials provided with the distribution.
+ *
+ *   * Neither the name of the copyright holder nor the names of its
+ *   contributors may be used to endorse or promote products derived from this
+ *   software without specific prior written permission.
+ *
+ * NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE GRANTED BY
+ * THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+ * CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+ * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _EDGE_IMPULSE_RUN_CLASSIFIER_H_
@@ -24,7 +41,7 @@
 #include "ei_run_dsp.h"
 #include "ei_classifier_types.h"
 #include "ei_signal_with_axes.h"
-#include "ei_performance_calibration.h"
+#include "postprocessing/ei_postprocessing.h"
 
 #include "edge-impulse-sdk/porting/ei_classifier_porting.h"
 #include "edge-impulse-sdk/porting/ei_logging.h"
@@ -58,6 +75,10 @@
 #include "edge-impulse-sdk/classifier/inferencing_engines/onnx_tidl.h"
 #elif EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_MEMRYX
 #include "edge-impulse-sdk/classifier/inferencing_engines/memryx.h"
+#elif EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_ETHOS_LINUX
+#include "edge-impulse-sdk/classifier/inferencing_engines/ethos_linux.h"
+#elif EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_ATON
+#include "edge-impulse-sdk/classifier/inferencing_engines/aton.h"
 #elif EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_NONE
 // noop
 #else
@@ -84,24 +105,28 @@ EI_IMPULSE_ERROR ei_unscale_fmatrix(ei_learning_block_t *block, ei::matrix_t *fm
 /* Private variables ------------------------------------------------------- */
 
 static uint64_t classifier_continuous_features_written = 0;
-static RecognizeEvents *avg_scores = NULL;
 
 /* Private functions ------------------------------------------------------- */
 
 /* These functions (up to Public functions section) are not exposed to end-user,
 therefore changes are allowed. */
 
-
 /**
  * @brief      Display the results of the inference
  *
  * @param      result  The result
  */
-__attribute__((unused)) void display_results(ei_impulse_result_t* result)
+__attribute__((unused)) void display_results(ei_impulse_handle_t *handle, ei_impulse_result_t* result)
 {
     // print the predictions
-    ei_printf("Predictions (DSP: %d ms., Classification: %d ms., Anomaly: %d ms.): \n",
-                result->timing.dsp, result->timing.classification, result->timing.anomaly);
+    ei_printf("Predictions (DSP: ");
+    result->timing.dsp_us ? ei_printf_float((float)result->timing.dsp_us/1000) : ei_printf("%d", result->timing.dsp);
+    ei_printf(" ms., Classification: ");
+    result->timing.classification_us ? ei_printf_float((float)result->timing.classification_us/1000) : ei_printf("%d", result->timing.classification);
+    ei_printf(" ms., Anomaly: ");
+    result->timing.anomaly_us ? ei_printf_float((float)result->timing.anomaly_us/1000) : ei_printf("%d", result->timing.anomaly);
+    ei_printf("ms.): \n");
+
 #if EI_CLASSIFIER_OBJECT_DETECTION == 1
     ei_printf("#Object detection results:\r\n");
     bool bb_found = result->bounding_boxes[0].value > 0;
@@ -144,10 +169,17 @@ __attribute__((unused)) void display_results(ei_impulse_result_t* result)
         ei_printf_float(bb.value);
         ei_printf(") [ x: %u, y: %u, width: %u, height: %u ]\n", bb.x, bb.y, bb.width, bb.height);
     }
-    ei_printf("Visual anomaly values: Mean %.3f Max %.3f\r\n", result->visual_ad_result.mean_value, result->visual_ad_result.max_value);
+    ei_printf("Visual anomaly values: Mean ");
+    ei_printf_float(result->visual_ad_result.mean_value);
+    ei_printf(" Max ");
+    ei_printf_float(result->visual_ad_result.max_value);
+    ei_printf("\r\n");
 #elif (EI_CLASSIFIER_HAS_ANOMALY > 0) // except for visual AD
-    ei_printf("Anomaly prediction: %.3f\r\n", result->anomaly);
+    ei_printf("Anomaly prediction: ");
+    ei_printf_float(result->anomaly);
+    ei_printf("\r\n");
 #endif
+    display_postprocessing(handle, result);
 }
 
 /**
@@ -219,28 +251,49 @@ extern "C" EI_IMPULSE_ERROR process_impulse(ei_impulse_handle_t *handle,
                                             ei_impulse_result_t *result,
                                             bool debug = false)
 {
-    if(!handle) {
+    if ((handle == nullptr) || (handle->impulse  == nullptr) || (result  == nullptr) || (signal  == nullptr)) {
         return EI_IMPULSE_INFERENCE_ERROR;
     }
 
-#if (EI_CLASSIFIER_QUANTIZATION_ENABLED == 1 && (EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TFLITE || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TENSAIFLOW || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_ONNX_TIDL)) || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_DRPAI
+#if (EI_CLASSIFIER_QUANTIZATION_ENABLED == 1 && (EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TFLITE || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TENSAIFLOW || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_ONNX_TIDL) || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_DRPAI || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_ATON)
     // Shortcut for quantized image models
     ei_learning_block_t block = handle->impulse->learning_blocks[0];
     if (can_run_classifier_image_quantized(handle->impulse, block) == EI_IMPULSE_OK) {
-        return run_classifier_image_quantized(handle->impulse, signal, result, debug);
+        EI_IMPULSE_ERROR res = run_classifier_image_quantized(handle->impulse, signal, result, debug);
+        if (res != EI_IMPULSE_OK) {
+            return res;
+        }
+        res = run_postprocessing(handle, result);
+        return res;
     }
 #endif
 
+#ifndef EI_DSP_RESULT_OVERRIDE
+    // Don't wipe in CI, as we store a pointer
     memset(result, 0, sizeof(ei_impulse_result_t));
+#endif
     uint32_t block_num = handle->impulse->dsp_blocks_size + handle->impulse->learning_blocks_size;
 
     // smart pointer to features array
     std::unique_ptr<ei_feature_t[]> features_ptr(new ei_feature_t[block_num]);
     ei_feature_t* features = features_ptr.get();
+
+    if (features == nullptr) {
+        ei_printf("ERR: Out of memory, can't allocate features\n");
+        return EI_IMPULSE_ALLOC_FAILED;
+    }
+
     memset(features, 0, sizeof(ei_feature_t) * block_num);
 
     // have it outside of the loop to avoid going out of scope
-    std::unique_ptr<ei::matrix_t> *matrix_ptrs = new std::unique_ptr<ei::matrix_t>[block_num];
+    std::unique_ptr<std::unique_ptr<ei::matrix_t>[]> matrix_ptrs_ptr(new std::unique_ptr<ei::matrix_t>[block_num]);
+    std::unique_ptr<ei::matrix_t> *matrix_ptrs = matrix_ptrs_ptr.get();
+
+    if (matrix_ptrs == nullptr) {
+        delete[] matrix_ptrs;
+        ei_printf("ERR: Out of memory, can't allocate matrix_ptrs\n");
+        return EI_IMPULSE_ALLOC_FAILED;
+    }
 
     uint64_t dsp_start_us = ei_read_timer_us();
 
@@ -248,20 +301,30 @@ extern "C" EI_IMPULSE_ERROR process_impulse(ei_impulse_handle_t *handle,
 
     for (size_t ix = 0; ix < handle->impulse->dsp_blocks_size; ix++) {
         ei_model_dsp_t block = handle->impulse->dsp_blocks[ix];
+
         matrix_ptrs[ix] = std::unique_ptr<ei::matrix_t>(new ei::matrix_t(1, block.n_output_features));
+        if (matrix_ptrs[ix] == nullptr) {
+            ei_printf("ERR: Out of memory, can't allocate matrix_ptrs[%lu]\n", (unsigned long)ix);
+            return EI_IMPULSE_ALLOC_FAILED;
+        }
+
+        if (matrix_ptrs[ix]->buffer == nullptr) {
+            ei_printf("ERR: Out of memory, can't allocate matrix_ptrs[%lu]\n", (unsigned long)ix);
+            delete[] matrix_ptrs;
+            return EI_IMPULSE_ALLOC_FAILED;
+        }
+
         features[ix].matrix = matrix_ptrs[ix].get();
         features[ix].blockId = block.blockId;
 
         if (out_features_index + block.n_output_features > handle->impulse->nn_input_frame_size) {
             ei_printf("ERR: Would write outside feature buffer\n");
-            delete[] matrix_ptrs;
             return EI_IMPULSE_DSP_ERROR;
         }
 
 #if EIDSP_SIGNAL_C_FN_POINTER
         if (block.axes_size != handle->impulse->raw_samples_per_frame) {
             ei_printf("ERR: EIDSP_SIGNAL_C_FN_POINTER can only be used when all axes are selected for DSP blocks\n");
-            delete[] matrix_ptrs;
             return EI_IMPULSE_DSP_ERROR;
         }
         auto internal_signal = signal;
@@ -282,8 +345,14 @@ extern "C" EI_IMPULSE_ERROR process_impulse(ei_impulse_handle_t *handle,
             // getter has a lazy init, so we can just call it
             auto dsp_handle = handle->state.get_dsp_handle(ix);
             if(dsp_handle) {
-                ret = dsp_handle->extract(internal_signal, features[ix].matrix, block.config, handle->impulse->frequency);
-            } else {
+                ret = dsp_handle->extract(
+                    internal_signal,
+                    features[ix].matrix,
+                    block.config,
+                    handle->impulse->frequency,
+                    result);
+            }
+            else {
                 return EI_IMPULSE_OUT_OF_MEMORY;
             }
         } else {
@@ -292,12 +361,10 @@ extern "C" EI_IMPULSE_ERROR process_impulse(ei_impulse_handle_t *handle,
 
         if (ret != EIDSP_OK) {
             ei_printf("ERR: Failed to run DSP process (%d)\n", ret);
-            delete[] matrix_ptrs;
             return EI_IMPULSE_DSP_ERROR;
         }
 
         if (ei_run_impulse_check_canceled() == EI_IMPULSE_CANCELED) {
-            delete[] matrix_ptrs;
             return EI_IMPULSE_CANCELED;
         }
 
@@ -337,9 +404,16 @@ extern "C" EI_IMPULSE_ERROR process_impulse(ei_impulse_handle_t *handle,
         ei_printf("Running impulse...\n");
     }
 
+#if EI_CLASSIFIER_DSP_ONLY
+    return EI_IMPULSE_OK;
+#else
     EI_IMPULSE_ERROR res = run_inference(handle, features, result, debug);
-    delete[] matrix_ptrs;
-    return res;
+    if (res != EI_IMPULSE_OK) {
+        return res;
+    } else {
+        return run_postprocessing(handle, result);
+    }
+#endif
 }
 
 /**
@@ -360,19 +434,22 @@ extern "C" EI_IMPULSE_ERROR init_impulse(ei_impulse_handle_t *handle) {
 /**
  * @brief      Process a complete impulse for continuous inference
  *
- * @param      impulse  struct with information about model and DSP
- * @param      signal   Sample data
- * @param      result   Output classifier results
- * @param[in]  debug    Debug output enable
+ * @param      handle               struct with information about model and DSP
+ * @param      signal               Sample data
+ * @param      result               Output classifier results
+ * @param[in]  debug                Debug output enable
  *
  * @return     The ei impulse error.
  */
 extern "C" EI_IMPULSE_ERROR process_impulse_continuous(ei_impulse_handle_t *handle,
                                             signal_t *signal,
                                             ei_impulse_result_t *result,
-                                            bool debug,
-                                            bool enable_maf)
+                                            bool debug = false)
 {
+    if ((handle == nullptr) || (handle->impulse  == nullptr) || (result  == nullptr) || (signal  == nullptr)) {
+        return EI_IMPULSE_INFERENCE_ERROR;
+    }
+
     auto impulse = handle->impulse;
     static ei::matrix_t static_features_matrix(1, impulse->nn_input_frame_size);
     if (!static_features_matrix.buffer) {
@@ -445,13 +522,9 @@ extern "C" EI_IMPULSE_ERROR process_impulse_continuous(ei_impulse_handle_t *hand
     result->timing.dsp_us = ei_read_timer_us() - dsp_start_us;
     result->timing.dsp = (int)(result->timing.dsp_us / 1000);
 
-    if (debug) {
-        ei_printf("\r\nFeatures (%d ms.): ", result->timing.dsp);
-        for (size_t ix = 0; ix < static_features_matrix.cols; ix++) {
-            ei_printf_float(static_features_matrix.buffer[ix]);
-            ei_printf(" ");
-        }
-        ei_printf("\n");
+    for (int i = 0; i < impulse->label_count; i++) {
+        // set label correctly in the result struct if we have no results (otherwise is nullptr)
+        result->classification[i].label = impulse->categories[(uint32_t)i];
     }
 
     if (classifier_continuous_features_written >= impulse->nn_input_frame_size) {
@@ -462,16 +535,36 @@ extern "C" EI_IMPULSE_ERROR process_impulse_continuous(ei_impulse_handle_t *hand
         // smart pointer to features array
         std::unique_ptr<ei_feature_t[]> features_ptr(new ei_feature_t[block_num]);
         ei_feature_t* features = features_ptr.get();
+        if (features == nullptr) {
+            ei_printf("ERR: Out of memory, can't allocate features\n");
+            return EI_IMPULSE_ALLOC_FAILED;
+        }
         memset(features, 0, sizeof(ei_feature_t) * block_num);
 
         // have it outside of the loop to avoid going out of scope
         std::unique_ptr<ei::matrix_t> *matrix_ptrs = new std::unique_ptr<ei::matrix_t>[block_num];
+        if (matrix_ptrs == nullptr) {
+            ei_printf("ERR: Out of memory, can't allocate matrix_ptrs\n");
+            return EI_IMPULSE_ALLOC_FAILED;
+        }
 
         out_features_index = 0;
         // iterate over every dsp block and run normalization
         for (size_t ix = 0; ix < impulse->dsp_blocks_size; ix++) {
             ei_model_dsp_t block = impulse->dsp_blocks[ix];
             matrix_ptrs[ix] = std::unique_ptr<ei::matrix_t>(new ei::matrix_t(1, block.n_output_features));
+
+            if (matrix_ptrs[ix] == nullptr) {
+                ei_printf("ERR: Out of memory, can't allocate matrix_ptrs[%lu]\n", (unsigned long)ix);
+                return EI_IMPULSE_ALLOC_FAILED;
+            }
+
+            if (matrix_ptrs[ix]->buffer == nullptr) {
+                ei_printf("ERR: Out of memory, can't allocate matrix_ptrs[%lu]\n", (unsigned long)ix);
+                delete[] matrix_ptrs;
+                return EI_IMPULSE_ALLOC_FAILED;
+            }
+
             features[ix].matrix = matrix_ptrs[ix].get();
             features[ix].blockId = block.blockId;
 
@@ -496,60 +589,18 @@ extern "C" EI_IMPULSE_ERROR process_impulse_continuous(ei_impulse_handle_t *hand
         result->timing.dsp = (int)(result->timing.dsp_us / 1000);
 
         if (debug) {
+            ei_printf("Feature Matrix: \n");
+            for (size_t ix = 0; ix < features->matrix->cols; ix++) {
+                ei_printf_float(features->matrix->buffer[ix]);
+                ei_printf(" ");
+            }
+            ei_printf("\n");
             ei_printf("Running impulse...\n");
         }
 
         ei_impulse_error = run_inference(handle, features, result, debug);
-
-#if EI_CLASSIFIER_CALIBRATION_ENABLED
-        if (impulse->sensor == EI_CLASSIFIER_SENSOR_MICROPHONE) {
-            if((void *)avg_scores != NULL && enable_maf == true) {
-                if (enable_maf && !impulse->calibration.is_configured) {
-                    // perfcal is not configured, print msg first time
-                    static bool has_printed_msg = false;
-
-                    if (!has_printed_msg) {
-                        ei_printf("WARN: run_classifier_continuous, enable_maf is true, but performance calibration is not configured.\n");
-                        ei_printf("       Previously we'd run a moving-average filter over your outputs in this case, but this is now disabled.\n");
-                        ei_printf("       Go to 'Performance calibration' in your Edge Impulse project to configure post-processing parameters.\n");
-                        ei_printf("       (You can enable this from 'Dashboard' if it's not visible in your project)\n");
-                        ei_printf("\n");
-
-                        has_printed_msg = true;
-                    }
-                }
-                else {
-                    // perfcal is configured
-                    static bool has_printed_msg = false;
-
-                    if (!has_printed_msg) {
-                        ei_printf("\nPerformance calibration is configured for your project. If no event is detected, all values are 0.\r\n\n");
-                        has_printed_msg = true;
-                    }
-
-                    int label_detected = avg_scores->trigger(result->classification);
-
-                    if (avg_scores->should_boost()) {
-                        for (int i = 0; i < impulse->label_count; i++) {
-                            if (i == label_detected) {
-                                result->classification[i].value = 1.0f;
-                            }
-                            else {
-                                result->classification[i].value = 0.0f;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-#endif
         delete[] matrix_ptrs;
-    }
-    else {
-        for (int i = 0; i < impulse->label_count; i++) {
-            // set label correctly in the result struct if we have no results (otherwise is nullptr)
-            result->classification[i].label = impulse->categories[(uint32_t)i];
-        }
+        ei_impulse_error = run_postprocessing(handle, result);
     }
 
     return ei_impulse_error;
@@ -563,7 +614,8 @@ __attribute__((unused)) static EI_IMPULSE_ERROR can_run_classifier_image_quantiz
     if (impulse->inferencing_engine != EI_CLASSIFIER_TFLITE
         && impulse->inferencing_engine != EI_CLASSIFIER_TENSAIFLOW
         && impulse->inferencing_engine != EI_CLASSIFIER_DRPAI
-        && impulse->inferencing_engine != EI_CLASSIFIER_ONNX_TIDL) // check later
+        && impulse->inferencing_engine != EI_CLASSIFIER_ONNX_TIDL
+        && impulse->inferencing_engine != EI_CLASSIFIER_ATON) // check later
     {
         return EI_IMPULSE_UNSUPPORTED_INFERENCING_ENGINE;
     }
@@ -592,7 +644,7 @@ __attribute__((unused)) static EI_IMPULSE_ERROR can_run_classifier_image_quantiz
     return EI_IMPULSE_OK;
 }
 
-#if EI_CLASSIFIER_QUANTIZATION_ENABLED == 1 && (EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TFLITE || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TENSAIFLOW || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_DRPAI || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_ONNX_TIDL)
+#if EI_CLASSIFIER_QUANTIZATION_ENABLED == 1 && (EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TFLITE || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TENSAIFLOW || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_DRPAI || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_ONNX_TIDL || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_ATON)
 
 /**
  * Special function to run the classifier on images, only works on TFLite models (either interpreter, EON, tensaiflow, drpai, tidl, memryx)
@@ -612,14 +664,11 @@ extern "C" EI_IMPULSE_ERROR run_classifier_image_quantized(
 
 #endif // #if EI_CLASSIFIER_QUANTIZATION_ENABLED == 1 && (EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TFLITE || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_TENSAIFLOW || EI_CLASSIFIER_INFERENCING_ENGINE == EI_CLASSIFIER_DRPAI)
 
-/* Public functions ------------------------------------------------------- */
-
-/* Thread carefully: public functions are not to be changed
-to preserve backwards compatibility. */
-
 #if EI_CLASSIFIER_LOAD_IMAGE_SCALING
 static const float torch_mean[] = { 0.485, 0.456, 0.406 };
 static const float torch_std[] = { 0.229, 0.224, 0.225 };
+// This is ordered BGR
+static const float tao_mean[] = { 103.939, 116.779, 123.68 };
 
 EI_IMPULSE_ERROR ei_scale_fmatrix(ei_learning_block_t *block, ei::matrix_t *fmatrix) {
     if (block->image_scaling == EI_CLASSIFIER_IMAGE_SCALING_TORCH) {
@@ -659,6 +708,20 @@ EI_IMPULSE_ERROR ei_scale_fmatrix(ei_learning_block_t *block, ei::matrix_t *fmat
         if (scale_res != EIDSP_OK) {
             ei_printf("ERR: Failed to scale matrix (%d)\n", scale_res);
             return EI_IMPULSE_DSP_ERROR;
+        }
+    }
+    else if (block->image_scaling == EI_CLASSIFIER_IMAGE_SCALING_BGR_SUBTRACT_IMAGENET_MEAN) {
+        int scale_res = numpy::scale(fmatrix, 255.0f);
+        if (scale_res != EIDSP_OK) {
+            ei_printf("ERR: Failed to scale matrix (%d)\n", scale_res);
+            return EI_IMPULSE_DSP_ERROR;
+        }
+        // Transpose RGB to BGR and subtract mean
+        for (size_t ix = 0; ix < fmatrix->rows * fmatrix->cols; ix += 3) {
+            float r = fmatrix->buffer[ix + 0];
+            fmatrix->buffer[ix + 0] = fmatrix->buffer[ix + 2] - tao_mean[0];
+            fmatrix->buffer[ix + 1] -= tao_mean[1];
+            fmatrix->buffer[ix + 2] = r - tao_mean[2];
         }
     }
 
@@ -705,106 +768,241 @@ EI_IMPULSE_ERROR ei_unscale_fmatrix(ei_learning_block_t *block, ei::matrix_t *fm
             return EI_IMPULSE_DSP_ERROR;
         }
     }
+    else if (block->image_scaling == EI_CLASSIFIER_IMAGE_SCALING_BGR_SUBTRACT_IMAGENET_MEAN) {
+        // Transpose BGR to RGB and add mean
+        for (size_t ix = 0; ix < fmatrix->rows * fmatrix->cols; ix += 3) {
+            float b = fmatrix->buffer[ix + 0];
+            fmatrix->buffer[ix + 0] = fmatrix->buffer[ix + 2] + tao_mean[2];
+            fmatrix->buffer[ix + 1] += tao_mean[1];
+            fmatrix->buffer[ix + 2] = b + tao_mean[0];
+        }
+        int scale_res = numpy::scale(fmatrix, 1 / 255.0f);
+        if (scale_res != EIDSP_OK) {
+            ei_printf("ERR: Failed to scale matrix (%d)\n", scale_res);
+            return EI_IMPULSE_DSP_ERROR;
+        }
+    }
     return EI_IMPULSE_OK;
 }
 #endif
 
+/* Public functions ------------------------------------------------------- */
+
+/* Tread carefully: public functions are not to be changed
+to preserve backwards compatibility. Anything in this public section
+will be documented by Doxygen. */
+
 /**
- * @brief      Init static vars
+ * @defgroup ei_functions Functions
+ *
+ * Public-facing functions for running inference using the Edge Impulse C++ library.
+ *
+ * **Source**: [classifier/ei_run_classifier.h](https://github.com/edgeimpulse/inferencing-sdk-cpp/blob/master/classifier/ei_run_classifier.h)
+ *
+ * @addtogroup ei_functions
+ * @{
  */
-extern "C" void run_classifier_init()
+
+/**
+ * @brief Initialize static variables for running preprocessing and inference
+ *  continuously.
+ *
+ * Initializes and clears any internal static variables needed by `run_classifier_continuous()`.
+ * This includes the moving average filter (MAF). This function should be called prior to
+ * calling `run_classifier_continuous()`.
+ *
+ * **Blocking**: yes
+ *
+ * **Example**: [nano_ble33_sense_microphone_continuous.ino](https://github.com/edgeimpulse/example-lacuna-ls200/blob/main/nano_ble33_sense_microphone_continous/nano_ble33_sense_microphone_continuous.ino)
+ */
+extern "C" void run_classifier_init(void)
 {
 
     classifier_continuous_features_written = 0;
     ei_dsp_clear_continuous_audio_state();
     init_impulse(&ei_default_impulse);
-
-#if EI_CLASSIFIER_CALIBRATION_ENABLED
-
-    const auto impulse = ei_default_impulse.impulse;
-    const ei_model_performance_calibration_t *calibration = &impulse->calibration;
-
-    if(calibration != NULL) {
-        avg_scores = new RecognizeEvents(calibration,
-            impulse->label_count, impulse->slice_size, impulse->interval_ms);
-    }
-#endif
+    init_postprocessing(&ei_default_impulse);
 }
 
 /**
- * @brief      Init static vars, for multi-model support
+ * @brief Initialize static variables for running preprocessing and inference
+ *  continuously.
+ *
+ * Initializes and clears any internal static variables needed by `run_classifier_continuous()`.
+ * This includes the moving average filter (MAF). This function should be called prior to
+ * calling `run_classifier_continuous()`.
+ *
+ * **Blocking**: yes
+ *
+ * **Example**: [nano_ble33_sense_microphone_continuous.ino](https://github.com/edgeimpulse/example-lacuna-ls200/blob/main/nano_ble33_sense_microphone_continous/nano_ble33_sense_microphone_continuous.ino)
+ *
+ * @param[in]   handle struct with information about model and DSP
  */
 __attribute__((unused)) void run_classifier_init(ei_impulse_handle_t *handle)
 {
     classifier_continuous_features_written = 0;
     ei_dsp_clear_continuous_audio_state();
     init_impulse(handle);
-
-#if EI_CLASSIFIER_CALIBRATION_ENABLED
-    auto impulse = handle->impulse;
-    const ei_model_performance_calibration_t *calibration = &impulse->calibration;
-
-    if(calibration != NULL) {
-        avg_scores = new RecognizeEvents(calibration,
-            impulse->label_count, impulse->slice_size, impulse->interval_ms);
-    }
-#endif
-}
-
-extern "C" void run_classifier_deinit(void)
-{
-    if((void *)avg_scores != NULL) {
-        delete avg_scores;
-    }
+    init_postprocessing(handle);
 }
 
 /**
- * @brief      Fill the complete matrix with sample slices. From there, run inference
- *             on the matrix.
+ * @brief Deletes static variables when running preprocessing and inference continuously.
  *
- * @param      signal  Sample data
- * @param      result  Classification output
- * @param[in]  debug   Debug output enable boot
+ * Deletes internal static variables used by `run_classifier_continuous()`, which
+ * includes the moving average filter (MAF). This function should be called when you
+ * are done running continuous classification.
  *
- * @return     The ei impulse error.
+ * **Blocking**: yes
+ *
+ * **Example**: [ei_run_audio_impulse.cpp](https://github.com/edgeimpulse/firmware-nordic-thingy53/blob/main/src/inference/ei_run_audio_impulse.cpp)
+ */
+extern "C" void run_classifier_deinit(void)
+{
+    deinit_postprocessing(&ei_default_impulse);
+}
+
+__attribute__((unused)) void run_classifier_deinit(ei_impulse_handle_t *handle)
+{
+    deinit_postprocessing(handle);
+}
+
+/**
+ * @brief Run preprocessing (DSP) on new slice of raw features. Add output features
+ *  to rolling matrix and run inference on full sample.
+ *
+ * Accepts a new slice of features give by the callback defined in the `signal` parameter.
+ * It performs preprocessing (DSP) on this new slice of features and appends the output to
+ * a sliding window of pre-processed features (stored in a static features matrix). The matrix
+ * stores the new slice and as many old slices as necessary to make up one full sample for
+ * performing inference.
+ *
+ * `run_classifier_init()` must be called before making any calls to
+ * `run_classifier_continuous().`
+ *
+ * For example, if you are doing keyword spotting on 1-second slices of audio and you want to
+ * perform inference 4 times per second (given by `EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW`), you
+ * would collect 0.25 seconds of audio and call run_classifier_continuous(). The function would
+ * compute the Mel-Frequency Cepstral Coefficients (MFCCs) for that 0.25 second slice of audio,
+ * drop the oldest 0.25 seconds' worth of MFCCs from its internal matrix, and append the newest
+ * slice of MFCCs. This process allows the library to keep track of the pre-processed features
+ * (e.g. MFCCs) in the window instead of the entire set of raw features (e.g. raw audio data),
+ * which can potentially save a lot of space in RAM. After updating the static matrix,
+ * inference is performed using the whole matrix, which acts as a sliding window of
+ * pre-processed features.
+ *
+ * Additionally, a moving average filter (MAF) can be enabled for `run_classifier_continuous()`,
+ * which averages (arithmetic mean) the last *n* inference results for each class. *n* is
+ * `EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW / 2`. In our example above, if we enabled the MAF, the
+ * values in `result` would contain predictions averaged from the previous 2 inferences.
+ *
+ * To learn more about `run_classifier_continuous()`, see
+ * [this guide](https://docs.edgeimpulse.com/docs/tutorials/advanced-inferencing/continuous-audio-sampling)
+ * on continuous audio sampling. While the guide is written for audio signals, the concepts of continuous sampling and inference can be extrapolated to any time-series data.
+ *
+ * **Blocking**: yes
+ *
+ * **Example**: [nano_ble33_sense_microphone_continuous.ino](https://github.com/edgeimpulse/example-lacuna-ls200/blob/main/nano_ble33_sense_microphone_continous/nano_ble33_sense_microphone_continuous.ino)
+ *
+ * @param[in] signal  Pointer to a signal_t struct that contains the number of elements in the
+ *  slice of raw features (e.g. `EI_CLASSIFIER_SLICE_SIZE`) and a pointer to a callback that reads
+ *  in the slice of raw features.
+ * @param[out] result Pointer to an `ei_impulse_result_t` struct that contains the various output
+ *  results from inference after run_classifier() returns.
+ * @param[in]  debug Print internal preprocessing and inference debugging information via
+ *  `ei_printf()`.
+ * @param[in]  enable_maf_unused Enable the moving average filter (MAF) for the classifier - deprecated, replaced with Performance Calibration
+ *
+ * @return Error code as defined by `EI_IMPULSE_ERROR` enum. Will be `EI_IMPULSE_OK` if inference
+ *  completed successfully.
  */
 extern "C" EI_IMPULSE_ERROR run_classifier_continuous(
     signal_t *signal,
     ei_impulse_result_t *result,
     bool debug = false,
-    bool enable_maf = true)
+    bool enable_maf_unused = true)
 {
     auto& impulse = ei_default_impulse;
-    return process_impulse_continuous(&impulse, signal, result, debug, enable_maf);
+    return process_impulse_continuous(&impulse, signal, result, debug);
 }
 
 /**
- * @brief      Fill the complete matrix with sample slices. From there, run impulse
- *             on the matrix.
+ * @brief Run preprocessing (DSP) on new slice of raw features. Add output features
+ *  to rolling matrix and run inference on full sample.
  *
- * @param      impulse struct with information about model and DSP
- * @param      signal  Sample data
- * @param      result  Classification output
- * @param[in]  debug   Debug output enable boot
+ * Accepts a new slice of features give by the callback defined in the `signal` parameter.
+ * It performs preprocessing (DSP) on this new slice of features and appends the output to
+ * a sliding window of pre-processed features (stored in a static features matrix). The matrix
+ * stores the new slice and as many old slices as necessary to make up one full sample for
+ * performing inference.
  *
- * @return     The ei impulse error.
+ * `run_classifier_init()` must be called before making any calls to
+ * `run_classifier_continuous().`
+ *
+ * For example, if you are doing keyword spotting on 1-second slices of audio and you want to
+ * perform inference 4 times per second (given by `EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW`), you
+ * would collect 0.25 seconds of audio and call run_classifier_continuous(). The function would
+ * compute the Mel-Frequency Cepstral Coefficients (MFCCs) for that 0.25 second slice of audio,
+ * drop the oldest 0.25 seconds' worth of MFCCs from its internal matrix, and append the newest
+ * slice of MFCCs. This process allows the library to keep track of the pre-processed features
+ * (e.g. MFCCs) in the window instead of the entire set of raw features (e.g. raw audio data),
+ * which can potentially save a lot of space in RAM. After updating the static matrix,
+ * inference is performed using the whole matrix, which acts as a sliding window of
+ * pre-processed features.
+ *
+ * Additionally, a moving average filter (MAF) can be enabled for `run_classifier_continuous()`,
+ * which averages (arithmetic mean) the last *n* inference results for each class. *n* is
+ * `EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW / 2`. In our example above, if we enabled the MAF, the
+ * values in `result` would contain predictions averaged from the previous 2 inferences.
+ *
+ * To learn more about `run_classifier_continuous()`, see
+ * [this guide](https://docs.edgeimpulse.com/docs/tutorials/advanced-inferencing/continuous-audio-sampling)
+ * on continuous audio sampling. While the guide is written for audio signals, the concepts of continuous sampling and inference can be extrapolated to any time-series data.
+ *
+ * **Blocking**: yes
+ *
+ * **Example**: [nano_ble33_sense_microphone_continuous.ino](https://github.com/edgeimpulse/example-lacuna-ls200/blob/main/nano_ble33_sense_microphone_continous/nano_ble33_sense_microphone_continuous.ino)
+ *
+ * @param[in] impulse `ei_impulse_handle_t` struct with information about preprocessing and model.
+ * @param[in] signal  Pointer to a signal_t struct that contains the number of elements in the
+ *  slice of raw features (e.g. `EI_CLASSIFIER_SLICE_SIZE`) and a pointer to a callback that reads
+ *  in the slice of raw features.
+ * @param[out] result Pointer to an `ei_impulse_result_t` struct that contains the various output
+ *  results from inference after run_classifier() returns.
+ * @param[in] debug Print internal preprocessing and inference debugging information via
+ *  `ei_printf()`.
+ * @param[in] enable_maf_unused Enable the moving average filter (MAF) for the classifier - deprecated, replaced with Performance Calibration
+ *
+ * @return Error code as defined by `EI_IMPULSE_ERROR` enum. Will be `EI_IMPULSE_OK` if inference
+ *  completed successfully.
  */
 __attribute__((unused)) EI_IMPULSE_ERROR run_classifier_continuous(
     ei_impulse_handle_t *impulse,
     signal_t *signal,
     ei_impulse_result_t *result,
     bool debug = false,
-    bool enable_maf = true)
+    bool enable_maf_unused = true)
 {
-    return process_impulse_continuous(impulse, signal, result, debug, enable_maf);
+    return process_impulse_continuous(impulse, signal, result, debug);
 }
 
 /**
- * Run the classifier over a raw features array
- * @param raw_features Raw features array
- * @param raw_features_size Size of the features array
- * @param result Object to store the results in
- * @param debug Whether to show debug messages (default: false)
+ * @brief Run the classifier over a raw features array.
+ *
+ *
+ * Overloaded function [run_classifier()](#run_classifier-1) that defaults to the single impulse.
+ *
+ * **Blocking**: yes
+ *
+ * @param[in] signal Pointer to a `signal_t` struct that contains the total length of the raw
+ *  feature array, which must match EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE, and a pointer to a callback
+ *  that reads in the raw features.
+ * @param[out] result  Pointer to an ei_impulse_result_t struct that will contain the various output
+ *  results from inference after `run_classifier()` returns.
+ * @param[in] debug Print internal preprocessing and inference debugging information via `ei_printf()`.
+ *
+ * @return Error code as defined by `EI_IMPULSE_ERROR` enum. Will be `EI_IMPULSE_OK` if inference
+ *  completed successfully.
  */
 extern "C" EI_IMPULSE_ERROR run_classifier(
     signal_t *signal,
@@ -815,12 +1013,29 @@ extern "C" EI_IMPULSE_ERROR run_classifier(
 }
 
 /**
- * Run the impulse over a raw features array
- * @param impulse struct with information about model and DSP
- * @param raw_features Raw features array
- * @param raw_features_size Size of the features array
- * @param result Object to store the results in
- * @param debug Whether to show debug messages (default: false)
+ * @brief Run the classifier over a raw features array.
+ *
+ *
+ * Accepts a `signal_t` input struct pointing to a callback that reads in pages of raw features.
+ * `run_classifier()` performs any necessary preprocessing on the raw features (e.g. DSP, cropping
+ * of images, etc.) before performing inference. Results from inference are stored in an
+ * `ei_impulse_result_t` struct.
+ *
+ * **Blocking**: yes
+ *
+ * **Example**: [standalone inferencing main.cpp](https://github.com/edgeimpulse/example-standalone-inferencing/blob/master/source/main.cpp)
+ *
+ * @param[in] impulse Pointer to an `ei_impulse_handle_t` struct that contains the model and
+ *  preprocessing information.
+ * @param[in] signal Pointer to a `signal_t` struct that contains the total length of the raw
+ *  feature array, which must match EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE, and a pointer to a callback
+ *  that reads in the raw features.
+ * @param[out] result  Pointer to an ei_impulse_result_t struct that will contain the various output
+ *  results from inference after `run_classifier()` returns.
+ * @param[in] debug Print internal preprocessing and inference debugging information via `ei_printf()`.
+ *
+ * @return Error code as defined by `EI_IMPULSE_ERROR` enum. Will be `EI_IMPULSE_OK` if inference
+ *  completed successfully.
  */
 __attribute__((unused)) EI_IMPULSE_ERROR run_classifier(
     ei_impulse_handle_t *impulse,
@@ -831,6 +1046,8 @@ __attribute__((unused)) EI_IMPULSE_ERROR run_classifier(
     return process_impulse(impulse, signal, result, debug);
 }
 
+/** @} */ // end of ei_functions Doxygen group
+
 /* Deprecated functions ------------------------------------------------------- */
 
 /* These functions are being deprecated and possibly will be removed or moved in future.
@@ -839,14 +1056,22 @@ Do not use these - if possible, change your code to reflect the upcoming changes
 #if EIDSP_SIGNAL_C_FN_POINTER == 0
 
 /**
- * Run the impulse, if you provide an instance of sampler it will also persist the data for you
- * @param sampler Instance to an **initialized** sampler
- * @param result Object to store the results in
- * @param data_fn Function to retrieve data from sensors
- * @param debug Whether to log debug messages (default false)
+ * @brief Run the impulse, if you provide an instance of sampler it will also persist
+ *  the data for you.
+ *
+ * @deprecated This function is deprecated and will be removed in future versions. Use
+ *  `run_classifier()` instead.
+ *
+ * @param[in] sampler Instance to an **initialized** sampler
+ * @param[out] result Object to store the results in
+ * @param[in] data_fn Callback function to retrieve data from sensors
+ * @param[in] debug Whether to log debug messages (default false)
+ *
+ * @return Error code as defined by `EI_IMPULSE_ERROR` enum. Will be `EI_IMPULSE_OK` if inference
+ *  completed successfully.
  */
 __attribute__((unused)) EI_IMPULSE_ERROR run_impulse(
-#if defined(EI_CLASSIFIER_HAS_SAMPLER) && EI_CLASSIFIER_HAS_SAMPLER == 1
+#if (defined(EI_CLASSIFIER_HAS_SAMPLER) && EI_CLASSIFIER_HAS_SAMPLER == 1) || defined(__DOXYGEN__)
         EdgeSampler *sampler,
 #endif
         ei_impulse_result_t *result,
@@ -904,12 +1129,19 @@ __attribute__((unused)) EI_IMPULSE_ERROR run_impulse(
     return r;
 }
 
-#if defined(EI_CLASSIFIER_HAS_SAMPLER) && EI_CLASSIFIER_HAS_SAMPLER == 1
+#if (defined(EI_CLASSIFIER_HAS_SAMPLER) && EI_CLASSIFIER_HAS_SAMPLER == 1) || defined(__DOXYGEN__)
 /**
- * Run the impulse, does not persist data
- * @param result Object to store the results in
- * @param data_fn Function to retrieve data from sensors
- * @param debug Whether to log debug messages (default false)
+ * @brief Run the impulse, does not persist data.
+ *
+ * @deprecated This function is deprecated and will be removed in future versions. Use
+ *  `run_classifier()` instead.
+ *
+ * @param[out] result Object to store the results in
+ * @param[in] data_fn Callback function to retrieve data from sensors
+ * @param[out] debug Whether to log debug messages (default false)
+ *
+ * @return Error code as defined by `EI_IMPULSE_ERROR` enum. Will be `EI_IMPULSE_OK` if inference
+ *  completed successfully.
  */
 __attribute__((unused)) EI_IMPULSE_ERROR run_impulse(
         ei_impulse_result_t *result,
