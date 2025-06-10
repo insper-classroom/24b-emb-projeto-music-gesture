@@ -1,6 +1,3 @@
-/*
- * LED blink with FreeRTOS
- */
 #include <FreeRTOS.h>
 #include <task.h>
 #include <semphr.h>
@@ -9,36 +6,38 @@
 #include "pico/stdlib.h"
 #include <stdio.h>
 
-struct led_task_arg {
-    int gpio;
-    int delay;
-};
+#include "hardware/gpio.h"
+#include "hardware/i2c.h"
+#include "mpu6050.h"
 
-void led_task(void *p) {
-    struct led_task_arg *a = (struct led_task_arg *)p;
+const int MPU_ADDRESS = 0x68;
+const int I2C_SDA_GPIO = 4;
+const int I2C_SCL_GPIO = 5;
 
-    gpio_init(a->gpio);
-    gpio_set_dir(a->gpio, GPIO_OUT);
-    while (true) {
-        gpio_put(a->gpio, 1);
-        vTaskDelay(pdMS_TO_TICKS(a->delay));
-        gpio_put(a->gpio, 0);
-        vTaskDelay(pdMS_TO_TICKS(a->delay));
+void mpu6050_task(void *p) {
+    imu_c mpu;
+    mpu.i2c = i2c_default;
+    mpu.pin_scl = I2C_SCL_GPIO;
+    mpu.pin_sda = I2C_SDA_GPIO;
+    mpu.acc_scale = 0;
+
+    mpu6050_init(mpu);
+
+    int16_t acceleration[3];
+
+    while(1) {
+        mpu6050_read_acc(mpu, acceleration);
+        printf("%d, %d, %d\n", acceleration[0], acceleration[1], acceleration[2]);
+
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
+
+
 }
 
 int main() {
     stdio_init_all();
-    printf("Start LED blink\n");
-
-    struct led_task_arg arg1 = {20, 100};
-    xTaskCreate(led_task, "LED_Task 1", 256, &arg1, 1, NULL);
-
-    struct led_task_arg arg2 = {21, 200};
-    xTaskCreate(led_task, "LED_Task 2", 256, &arg2, 1, NULL);
-
-    struct led_task_arg arg3 = {22, 300};
-    xTaskCreate(led_task, "LED_Task 3", 256, &arg3, 1, NULL);
+    xTaskCreate(mpu6050_task, "mpu6050_Task 1", 8192, NULL, 1, NULL);
 
     vTaskStartScheduler();
 
